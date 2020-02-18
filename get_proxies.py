@@ -5,10 +5,10 @@ import pdb
 from fake_useragent import UserAgent
 import random
 
-PROXY_FETCH_NUM = 5
+PROXY_FETCH_NUM = 1
 
 def generate_proxies():
-    proxy_url = "http://piping.mogumiao.com/proxy/api/get_ip_bs?appKey=d713da489d59439c900b16f02b3fea77&count=5&expiryDate=0&format=2&newLine=2"
+    proxy_url = "http://piping.mogumiao.com/proxy/api/get_ip_bs?appKey=95cd772cf38e46678d5c11304775f9bd&count=1&expiryDate=0&format=2&newLine=2"
     try:
         raw_proxies = requests.get(proxy_url).text
     except:
@@ -18,9 +18,10 @@ def generate_proxies():
     proxies_list.pop(-1)
     # print("proxies list is {}".format(proxies_list))
     return proxies_list
+
 def generate_headers():
     try:
-        headers = [UserAgent().random for i in range(0,PROXY_FETCH_NUM)]
+        headers = [UserAgent().chrome for i in range(0,PROXY_FETCH_NUM)]
     except:
         print("can't get headers!")
     return headers
@@ -57,7 +58,7 @@ if __name__ == "__main__":
     headers = generate_headers()
     print("headers generate success {} with length {}".format(headers[0], len(headers)))
     proxies = generate_proxies()
-    proxy, header = proxy_headers(proxies, headers, 19)
+    proxy, header = proxy_headers(proxies, headers, 0)
     # proxy, header = random_proxy_headers(proxies)
     check_proxies(proxy, header)
     # print("proxies is {}".format(proxies))

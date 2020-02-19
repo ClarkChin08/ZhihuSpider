@@ -133,6 +133,10 @@ def fetch_answer_list(question_id, per_page=20):
             for answer in data['data']:
                 answer_id = answer['id']
                 answer_user = answer['author']['url_token']
+                # skip hiden user
+                if answer_user == "":
+                    Log.logger.info("hider user skip....")
+                    continue
                 answer_url = "https://www.zhihu.com/question/{}/answer/{}".format(question_id, answer_id)    
                 answer_info = {"answer_user": answer_user, "answer_url": answer_url}
                 Log.logger.info("add user and url {}".format(answer_info))
@@ -192,21 +196,22 @@ def fetch_user_urls(url):
         Log.logger.info("user has no image url {}".format(url))
     return img_urls
 
-def write_image_from_source(filename, source):
+def write_image_from_source(filename, fileholder, source):
     try:
-        with open(os.path.join(DIR, filename), "wb") as fd:
+        with open(os.path.join(fileholder, filename), "wb") as fd:
             fd.write(source)
     except Exception as e:
         Log.logger.warning("write image failed, please check")
 
-def write_image_from_url(url, filepath):
+def write_image_from_url(filename, fileholder, url):
+    filepath = "{}/{}".format(fileholder, filename) 
     try:
         urlretrieve(url, filepath)
     except Exception as e:
         Log.logger.warning("download image falied")
     
 # process the images of the specific user
-def process_images(img_urls, author_name, face_detective, following=0, use_face=True):
+def process_images(img_urls, author_name, face_detective, fileholder="/mnt/e/questions", following=0, use_face=True):
     girl_num = 0
     # will shuffle the images for not extract image from one answer
     Log.logger.info("first process image {}".format(img_urls[0]))
@@ -225,7 +230,7 @@ def process_images(img_urls, author_name, face_detective, following=0, use_face=
             if len(person) > 0:
                 filename = "{}_{}_{}.jpg".format(author_name, following, girl_num)
                 Log.logger.info("got one girl image {}".format(filename))
-                write_image_from_source(filename, s.content)
+                write_image_from_source(filename, fileholder, s.content)
                 girl_num += 1
 
             # if girl_num > 10:
@@ -233,7 +238,7 @@ def process_images(img_urls, author_name, face_detective, following=0, use_face=
         else:
             filename = "{}_{}.jpg".format(author_name, girl_num)
             Log.logger.info("got one girl image {}".format(filename))
-            write_image_from_url(image, "{}/{}".format(DIR, filename))
+            write_image_from_url(filename, fileholder, image)
             girl_num += 1
             if girl_num > 10:
                 break
@@ -269,8 +274,13 @@ def init_aip_method(app_id, api_key, secret_key, method=AipBodyAnalysis):
     return detective
 
 def create_image_folder(fileholder):
+    is_skip = False
     if not os.path.exists(fileholder):
         os.makedirs(fileholder)
+    else:
+        Log.logger.warning("this question has been created: {}".format(fileholder))
+        is_skip = True
+    return is_skip
 
 def prepare_users():
     user_file = "zhihu.csv"
@@ -288,14 +298,16 @@ def prepare_users():
     user_list = user_frame[['self_domain', 'following']]
     # return user's self domain name
     return user_list
-def fetch_images_according_to_user():
+def fetch_images_per_user():
     face_detective = init_aip_method(APP_ID, API_KEY, SECRET_KEY)
     user_list = prepare_users()
+    filehoder = "/mnt/e/users/{}".format(int(time.time()))
+    create_image_folder(fileholder)
     for i in range(330, user_list.shape[0]):
         Log.logger.info("current url: " + user_list['self_domain'].iloc[i])
         img_urls = fetch_user_urls(user_list['self_domain'].iloc[i])
         if len(img_urls) > 0:
-            girl_num = process_images(img_urls, user_list['self_domain'].iloc[i], face_detective, user_list['following'].iloc[i])
+            girl_num = process_images(img_urls, user_list['self_domain'].iloc[i], face_detective, fileholder, user_list['following'].iloc[i])
    
 def zip_topic_url(topic_id, offset=0, per_page=10):
     topic_url = "https://www.zhihu.com/api/v4/topics/{}/feeds/essence?offset={}&limit={}".format(topic_id, offset, per_page)
@@ -357,7 +369,7 @@ def fetch_question_list(topic_id, per_page=10):
     Log.logger.info("add {} questions to list!".format(question_count))
     return question_list
 
-def filter_question(answer_list, face_detective, test_answer_num=10):
+def filter_question(answer_list, face_detective, fileholder, test_answer_num=10):
     # select how many answer to test
     is_skip = False
     all_img_count = 0
@@ -368,7 +380,7 @@ def filter_question(answer_list, face_detective, test_answer_num=10):
         for i in range(0, test_answer_num):
             img_urls = fetch_answer_content(answer_list['answer_url'].iloc[i])
             if len(img_urls) > 0:
-                female_img_count += process_images(img_urls, answer_list['answer_user'].iloc[i], face_detective)
+                female_img_count += process_images(img_urls, answer_list['answer_user'].iloc[i], face_detective, fileholder)
             all_img_count += len(img_urls)
         # 50% test image are female, this question not useful for our use
         if female_img_count * 2.5 < all_img_count:
@@ -378,36 +390,43 @@ def filter_question(answer_list, face_detective, test_answer_num=10):
 
 def fetch_images_per_question(): 
     face_detective = init_aip_method(APP_ID, API_KEY, SECRET_KEY)
-    # topic_list = ["19552223", "19552207", "19584431", "19655944"]
-    topic_list = ["19552207", "19584431"]
+    # topic_list = ["19552223", "19552207", "19584431", "19655944", '19941817', '20034818',
+    #   "19561622", "19664390", "19550818", "19561847"]
+    topic_list = ["19655944"]
+    # topic_list = ["19561622"]
     # topic_list = ["19683311", "19633980", "20077041","19561625"]
 
-    question_list = ["66313867"]
+    question_list = []
 
     # you can select topic to get image
-    # for topic_id in topic_list:
-    #     question_list.extend(fetch_question_list(topic_id))
+    for topic_id in topic_list:
+        question_list.extend(fetch_question_list(topic_id))
 
+    # we will loop each question
     for i in range(0, len(question_list)):
         quetion_male_count = 0
         # collect according to specified folder
-        DIR = "/mnt/c/questions/{}".format(question_list[i])
-        create_image_folder(DIR)
+        fileholder = "/mnt/e/questions/{}".format(question_list[i])
+        is_skip = create_image_folder(fileholder)
+        if is_skip:
+            Log.logger.warning("image folder eixsts, skip this question")
+            continue
+
         Log.logger.info("current quesion: {}".format(question_list[i]))
         answer_list = fetch_answer_list(question_list[i])
         answer_list = pd.DataFrame(answer_list)
 
-        # # get 10% of the answers to test
-        # test_answer_num = int(answer_list.shape[0] / 10)
-        # # we should make sure it's female or skip this question
-        # answer_list, is_skip = filter_question(answer_list, face_detective, test_answer_num)
-        # if is_skip:
-        #     break
+        # get 10% of the answers to test
+        test_answer_num = int(answer_list.shape[0] / 10) % 200
+        # we should make sure it's female or skip this question
+        answer_list, is_skip = filter_question(answer_list, face_detective, fileholder, test_answer_num)
+        if is_skip:
+            continue
 
         for i in range(0, answer_list.shape[0]):
             img_urls = fetch_answer_content(answer_list['answer_url'].iloc[i])
             if len(img_urls) > 0:
-                girl_num = process_images(img_urls, answer_list['answer_user'].iloc[i], None, 0, False)
+                girl_num = process_images(img_urls, answer_list['answer_user'].iloc[i], None, fileholder, 0, False)
 
 
 if __name__ == "__main__":
@@ -416,9 +435,6 @@ if __name__ == "__main__":
     APP_ID ="18480308"
     API_KEY = "r1ddkBzIGucxEwCkRArbrZGn"
     SECRET_KEY = "7ZCAHQaVWvuKP2MCKRxbdgiL3eMbGbhy"
-    # save the file to this folder
-    DIR = "/mnt/e/questions/{}".format(int(time.time()))
-    create_image_folder(DIR)
 
     Log.init_logger()
     Proxy.init_proxies()

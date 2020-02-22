@@ -3,9 +3,70 @@ import requests
 import pdb
 # generate random user agent
 from fake_useragent import UserAgent
+import http.cookiejar as cookielib
 import random
+import logging
 
 PROXY_FETCH_NUM = 1
+
+class Log():
+    # logging.basicConfig(level = logging.INFO, filename='girl.log', filemode='w', format = '%(asctime)s - %(levelname)s - %(message)s')
+    logger = None
+    @staticmethod
+    def init_logger():
+        logging.basicConfig(level = logging.INFO, format = '%(asctime)s - %(levelname)s - %(message)s')
+        Log.logger = logging.getLogger(__name__)
+
+class Proxy():
+    proxies = []
+    headers = []
+    proxy, header = None, None
+    session = None
+    # proxy usage
+    usage = 0
+
+    @staticmethod
+    def init_proxies():
+        # create session for the program
+        requests.adapters.DEFAULT_RETRIES = 2
+        Proxy.session = requests.Session()
+        Proxy.session.cookies = cookielib.LWPCookieJar(filename='cookie')
+        Proxy.session.keep_alive = False
+        try:
+            Proxy.session.cookies.load(ignore_discard=True)
+        except:
+            Log.logger.info('Cookie cant load')
+        finally:
+            pass
+
+
+    @staticmethod
+    def refresh_proxies():
+        # generate proxies may fetch empty list so check the len then assign
+        try:
+            temp_proxies = generate_proxies()
+            if len(temp_proxies) > 0:
+                proxies = temp_proxies
+                headers = generate_headers()
+            Log.logger.info("proxy generated! {}".format(proxies))
+            Proxy.proxy, Proxy.header = proxy_headers(proxies, headers, 0)
+        except:
+            Log.logger.info("proxy fetched failed")
+
+    @staticmethod
+    def fetch_url(url, infos="url fetch failed"):
+        try:
+            s = Proxy.session.get(url, proxies=Proxy().proxy, headers=Proxy().header, timeout=5)
+        except Exception as e:
+            Log.logger.warning(infos + " {}".format(e))
+            Proxy.usage = 50
+            s = None
+    
+        Proxy.usage += 1 
+        if Proxy.usage > 50:
+            Proxy.usage = 0
+            Proxy.refresh_proxies()
+        return s
 
 def generate_proxies():
     proxy_url = "http://piping.mogumiao.com/proxy/api/get_ip_bs?appKey=95cd772cf38e46678d5c11304775f9bd&count=1&expiryDate=0&format=2&newLine=2"

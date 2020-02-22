@@ -3,87 +3,30 @@
 Created on Mon Mar 19 11:10:25 2018
 
 """
+
+import sys
 import time
 import os
 import re
-import requests
-import http.cookiejar as cookielib
-from lxml import etree
 from aip import AipFace, AipBodyAnalysis
 import pandas as pd
-import get_proxies
-import urllib
 from fake_useragent import UserAgent
 from bs4 import BeautifulSoup
 import random
-import logging
 import pdb
 import math
 from urllib.request import urlretrieve
-# import json
+from get_proxies import Log, Proxy
+import base64
 
-class Log():
-    # logging.basicConfig(level = logging.INFO, filename='girl.log', filemode='w', format = '%(asctime)s - %(levelname)s - %(message)s')
-    logger = None
-    @staticmethod
-    def init_logger():
-        logging.basicConfig(level = logging.INFO, format = '%(asctime)s - %(levelname)s - %(message)s')
-        Log.logger = logging.getLogger(__name__)
-
-
-class Proxy():
-    proxies = []
-    headers = []
-    proxy, header = None, None
-    session = None
-    # proxy usage
-    usage = 0
-
-    @staticmethod
-    def init_proxies():
-        # create session for the program
-        requests.adapters.DEFAULT_RETRIES = 2
-        Proxy.session = requests.Session()
-        Proxy.session.cookies = cookielib.LWPCookieJar(filename='cookie')
-        Proxy.session.keep_alive = False
-        try:
-            Proxy.session.cookies.load(ignore_discard=True)
-        except:
-            Log.logger.info('Cookie cant load')
-        finally:
-            pass
-
-
-    @staticmethod
-    def refresh_proxies():
-        # generate proxies may fetch empty list so check the len then assign
-        try:
-            temp_proxies = get_proxies.generate_proxies()
-            if len(temp_proxies) > 0:
-                proxies = temp_proxies
-                headers = get_proxies.generate_headers()
-            Log.logger.info("proxy generated! {}".format(proxies))
-            Proxy.proxy, Proxy.header = get_proxies.proxy_headers(proxies, headers, 0)
-        except:
-            Log.logger.info("proxy fetched failed")
-
-    @staticmethod
-    def fetch_url(url, infos="url fetch failed"):
-        try:
-            s = Proxy.session.get(url, proxies=Proxy().proxy, headers=Proxy().header, timeout=5)
-        except Exception as e:
-            Log.logger.warning(infos + " {}".format(e))
-            Proxy.usage = 50
-            s = None
-    
-        Proxy.usage += 1 
-        if Proxy.usage > 50:
-            Proxy.usage = 0
-            Proxy.refresh_proxies()
-        return s
 def zip_question_url(question_id, offset=0, per_page=20):
     question_url = "https://www.zhihu.com/api/v4/questions/{}/answers?offset={}&limit={}".format(question_id, offset, per_page)
     return question_url
+
+def zip_topic_url(topic_id, offset=0, per_page=10):
+    topic_url = "https://www.zhihu.com/api/v4/topics/{}/feeds/essence?offset={}&limit={}".format(topic_id, offset, per_page)
+    return topic_url
+
 # per page means how many answers one page
 def fetch_answer_list(question_id, per_page=20):
     question_page = None
@@ -173,7 +116,7 @@ def fetch_answer_content(answer_url):
     return img_urls
 
 
-# to say one url should only have one file list to return for face detection
+# to say one url should only have one file list to return for body detection
 def fetch_user_urls(url):
     answers_api = "https://www.zhihu.com/api/v4/members/{}/answers?limit=20&offset=0".format(url)
     s = Proxy.fetch_url(answers_api, infos="answers json fetched failed")
@@ -211,7 +154,7 @@ def write_image_from_url(filename, fileholder, url):
         Log.logger.warning("download image falied")
     
 # process the images of the specific user
-def process_images(img_urls, author_name, face_detective, fileholder="/mnt/e/questions", following=0, use_face=True):
+def process_images(img_urls, author_name, body_detect, fileholder="/mnt/e/questions", following=0, use_body=True):
     girl_num = 0
     # will shuffle the images for not extract image from one answer
     Log.logger.info("first process image {}".format(img_urls[0]))
@@ -220,12 +163,12 @@ def process_images(img_urls, author_name, face_detective, fileholder="/mnt/e/que
         author_name += str(int(time.time()) % 5000)
 
     for image in img_urls:
-        if use_face:
+        if use_body:
             random.shuffle(img_urls)
             s = Proxy.fetch_url(image, infos="per image fetched failed")
             if s == None:
                 continue
-            person = face_detective(s.content)
+            person, _ = body_detect(s.content)
             time.sleep(0.3)
             if len(person) > 0:
                 filename = "{}_{}_{}.jpg".format(author_name, following, girl_num)
@@ -244,33 +187,97 @@ def process_images(img_urls, author_name, face_detective, fileholder="/mnt/e/que
                 break
         # make sure the QPS limit of baidu ai 
     return girl_num
+# should encode the image to base 64
+def read_file_from_source(filepath):
+    f = None
+    try:
+        f = open(filepath, 'rb')
+        # file_content = base64.b64encode(f.read())
+        return f.read()
+    except Exception as e:
+        Log.logger.warning('read image from source fail {}'.format(e))
+        return None
+    finally:
+        if f:
+            f.close()
 
-def init_aip_method(app_id, api_key, secret_key, method=AipBodyAnalysis):
-    client = method(app_id, api_key, secret_key)
-    net = AipBodyAnalysis(app_id, api_key, secret_key)
-    net.setConnectionTimeoutInMillis(5000)
-    net.setSocketTimeoutInMillis(9000) 
+
+def init_face_detection():
+    # baidu clond AI detection project https://console.bce.baidu.com
+    app_id ="18484091"
+    api_key = "NIIBHYQpseZ89SGt2Am4SlPC"
+    secret_key = "kIpTIGzdSoXSWYa8bf711HXBxCtQ6loV"
+
+    client = AipFace(app_id, api_key, secret_key)
+    client.setConnectionTimeoutInMillis(5000)
+    client.setSocketTimeoutInMillis(9000) 
+    options = {"face_field": "beauty,gender,face_type"}
+
+    def detective(raw_image):
+        try:
+            image_type = "BASE64"
+            image = base64.b64encode(raw_image)
+            if image == None:
+                Log.logger.warning("image become NoneType")
+                return "fault_face"
+
+            r = client.detect(str(image,'utf-8'), image_type, options)
+
+            if r['result'] == None:
+                Log.logger.info("image contain no face")
+                return [], "faceless"
+            
+            # for face in r['result']['face_list']:
+            # only choose the first face
+            face = r['result']['face_list'][0]
+
+            if face['face_type']['type'] == "cartoon" : 
+                Log.logger.info("cartoon has been detected, discard")
+                return [], "unreal"
+            if face['gender']['type'] == "male": 
+                Log.logger.info("male face detected, discard")
+                return [], "male"
+            if face['beauty'] < 10:
+                Log.logger.info("it's a little ugly, discard")
+                return [], "ugly"
+            else:
+                return [r], "beauty_{}".format(face['beauty'])
+
+        except Exception as e:
+            Log.logger.warning("image can't be processed {}".format(e))
+            return [], "error"
+    return detective
+
+def init_body_detection():
+    # baidu clond AI detection project https://console.bce.baidu.com
+    app_id ="18480308"
+    api_key = "r1ddkBzIGucxEwCkRArbrZGn"
+    secret_key = "7ZCAHQaVWvuKP2MCKRxbdgiL3eMbGbhy"
+
+    client = AipBodyAnalysis(app_id, api_key, secret_key)
+    client.setConnectionTimeoutInMillis(4000)
+    client.setSocketTimeoutInMillis(7000) 
     options = {"type": "gender,age"}
     def detective(image):
         try:
             r = client.bodyAttr(image, options)
             if r["person_num"] == 0:
                 Log.logger.info("image contain no person")
-                return []
+                return [], "no_body"
             for person in r['person_info']:
                 if person['attributes']['gender']['name'] == "男性": 
                     Log.logger.info("male has been detected, discard")
-                    return []
+                    return [], "male"
                 if person['attributes']['gender']['score'] < 0.6: 
                     Log.logger.info("not that much like a girl discard")
-                    return []
+                    return [], "neutral"
                 if person['attributes']['age']['name'] == "幼儿":
                     Log.logger.info("children has been detected, discard")
-                    return []
+                    return [], "children"
         except Exception as e:
             Log.logger.warning("image can't be processed {}".format(e))
-            return []
-        return [r]
+            return [], "error"
+        return [r], "girl"
     return detective
 
 def create_image_folder(fileholder):
@@ -298,8 +305,9 @@ def prepare_users():
     user_list = user_frame[['self_domain', 'following']]
     # return user's self domain name
     return user_list
+
 def fetch_images_per_user():
-    face_detective = init_aip_method(APP_ID, API_KEY, SECRET_KEY)
+    body_detect = init_body_detection()
     user_list = prepare_users()
     filehoder = "/mnt/e/users/{}".format(int(time.time()))
     create_image_folder(fileholder)
@@ -307,12 +315,8 @@ def fetch_images_per_user():
         Log.logger.info("current url: " + user_list['self_domain'].iloc[i])
         img_urls = fetch_user_urls(user_list['self_domain'].iloc[i])
         if len(img_urls) > 0:
-            girl_num = process_images(img_urls, user_list['self_domain'].iloc[i], face_detective, fileholder, user_list['following'].iloc[i])
+            girl_num = process_images(img_urls, user_list['self_domain'].iloc[i], body_detect, fileholder, user_list['following'].iloc[i])
    
-def zip_topic_url(topic_id, offset=0, per_page=10):
-    topic_url = "https://www.zhihu.com/api/v4/topics/{}/feeds/essence?offset={}&limit={}".format(topic_id, offset, per_page)
-    return topic_url
-
 # per page means how many answers one page
 def fetch_question_list(topic_id, per_page=10):
     topic_page = None
@@ -369,7 +373,7 @@ def fetch_question_list(topic_id, per_page=10):
     Log.logger.info("add {} questions to list!".format(question_count))
     return question_list
 
-def filter_question(answer_list, face_detective, fileholder, test_answer_num=10):
+def filter_question(answer_list, body_detect, fileholder, test_answer_num=10):
     # select how many answer to test
     is_skip = False
     all_img_count = 0
@@ -380,7 +384,7 @@ def filter_question(answer_list, face_detective, fileholder, test_answer_num=10)
         for i in range(0, test_answer_num):
             img_urls = fetch_answer_content(answer_list['answer_url'].iloc[i])
             if len(img_urls) > 0:
-                female_img_count += process_images(img_urls, answer_list['answer_user'].iloc[i], face_detective, fileholder)
+                female_img_count += process_images(img_urls, answer_list['answer_user'].iloc[i], body_detect, fileholder)
             all_img_count += len(img_urls)
         # 50% test image are female, this question not useful for our use
         if female_img_count * 2.5 < all_img_count:
@@ -389,12 +393,15 @@ def filter_question(answer_list, face_detective, fileholder, test_answer_num=10)
 
 
 def fetch_images_per_question(): 
-    face_detective = init_aip_method(APP_ID, API_KEY, SECRET_KEY)
-    # topic_list = ["19552223", "19552207", "19584431", "19655944", '19941817', '20034818',
-    #   "19561622", "19664390", "19550818", "19561847"]
+    body_detect = init_body_detection()
+
+    # topic_list = ["19552223", "19552207", "19584431", 
+    #               "19655944", '19941817', '20034818',
+    #               "19561622", "19664390", "19550818", 
+    #               "19561847", "19683311", "19633980", 
+    #               "20077041", "19561625"]
+
     topic_list = ["19655944"]
-    # topic_list = ["19561622"]
-    # topic_list = ["19683311", "19633980", "20077041","19561625"]
 
     question_list = []
 
@@ -419,7 +426,7 @@ def fetch_images_per_question():
         # get 10% of the answers to test
         test_answer_num = int(answer_list.shape[0] / 10) % 200
         # we should make sure it's female or skip this question
-        answer_list, is_skip = filter_question(answer_list, face_detective, fileholder, test_answer_num)
+        answer_list, is_skip = filter_question(answer_list, body_detect, fileholder, test_answer_num)
         if is_skip:
             continue
 
@@ -428,26 +435,45 @@ def fetch_images_per_question():
             if len(img_urls) > 0:
                 girl_num = process_images(img_urls, answer_list['answer_user'].iloc[i], None, fileholder, 0, False)
 
+def analysis_images(fileholder):
+    body_detect = init_body_detection()
+    face_detect = init_face_detection()
+
+    files = os.listdir(fileholder)
+    for element in files:
+        filepath = os.path.join(fileholder, element)
+        if os.path.isdir(filepath):
+            analysis_images(filepath) 
+        else:
+            image = read_file_from_source(filepath) 
+            if image == None:
+                Log.logger.warning("image read out failed")
+                continue
+            # now detect body
+            person, comment = body_detect(image)
+            if len(person) > 0:
+                image = read_file_from_source(filepath) 
+                _, comment = face_detect(image)
+
+            time.sleep(0.5)
+            
+            filename = "{}_{}".format(comment, filepath.rsplit("/", 1)[-1])
+            os.rename(filepath, "{}/{}".format(filepath.rsplit("/", 1)[0], filename))
+            Log.logger.info("rename file name {}".format(filename))
+
 
 if __name__ == "__main__":
 
-    # baidu clond AI detection project https://console.bce.baidu.com
-    APP_ID ="18480308"
-    API_KEY = "r1ddkBzIGucxEwCkRArbrZGn"
-    SECRET_KEY = "7ZCAHQaVWvuKP2MCKRxbdgiL3eMbGbhy"
-
     Log.init_logger()
-    Proxy.init_proxies()
-    Proxy.refresh_proxies()
-    Log.logger.info("proxy and header {} {}".format(Proxy.proxy, Proxy.header))
-    # get_proxies.check_proxies(Proxy.proxy, Proxy.header)
+    # Proxy.init_proxies()
+    # Proxy.refresh_proxies()
+    # Log.logger.info("proxy and header {} {}".format(Proxy.proxy, Proxy.header))
     # pdb.set_trace()
     # we have 2 method for one is fetch image per user and the other per question
     # fetch_images_per_user()
-    fetch_images_per_question()
+    # fetch_images_per_question()
+    fileholder = "/mnt/e/questions" 
+    if (len(sys.argv) > 0):
+        fileholder = sys.argv[1]    
+    analysis_images(fileholder)
 
-
-        # if i > 3:
-        #     Log.logger.info("now end")
-        #     break
-    
